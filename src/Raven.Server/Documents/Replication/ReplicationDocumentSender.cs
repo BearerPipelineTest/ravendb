@@ -742,9 +742,50 @@ namespace Raven.Server.Documents.Replication
 
             foreach (var item in _orderedReplicaItems)
             {
-                using (Slice.From(documentsContext.Allocator, item.Value.ChangeVector, out var cv))
+                try
                 {
-                    item.Value.Write(cv, _stream, _tempBuffer, stats);
+                    using (Slice.From(documentsContext.Allocator, item.Value.ChangeVector, out var cv))
+                    {
+                        item.Value.Write(cv, _stream, _tempBuffer, stats);
+                    }
+                }
+                catch (Exception e)
+                {
+                    if (item.Value is TimeSeriesReplicationItem tsr)
+                    {
+                        string numberOfBytes;
+                        try
+                        {
+                            numberOfBytes = tsr.Segment.NumberOfBytes.ToString();
+                        }
+                        catch (Exception ee)
+                        {
+                            numberOfBytes = $"Failed to get the number of bytes, {ee}";
+                        }
+
+                        using (var context = JsonOperationContext.ShortTermSingleUse())
+                        {
+                            LazyStringValue docId = null;
+                            LazyStringValue name = null;
+                            DateTime baseLine = default;
+
+                            try
+                            {
+                                _ = tsr.Key.Size;
+                                TimeSeriesValuesSegment.ParseTimeSeriesKey(tsr.Key, context, out docId, out name, out baseLine);
+                            }
+                            catch
+                            {
+                                // nothing we can do
+                            }
+
+                            throw new InvalidOperationException($"Failed to write TimeSeriesReplicationItem, change vector: {tsr.ChangeVector}, etag: {tsr.Etag}, size: {tsr.Size}, " +
+                                                                $"docId: {docId}, name: {name}, baseLine: {baseLine}, number of bytes: {numberOfBytes}, name: {tsr.Name}, collection: {tsr.Collection}", e);
+                        }
+                        
+                    }
+
+                    throw;
                 }
             }
 
